@@ -1,0 +1,22 @@
+{
+  "name": "eBPF Linux Development",
+  "build": {
+    "dockerfile": "../Dockerfile",
+    "context": ".."
+  },
+  "runArgs": [
+    "--privileged"
+  ],
+  "customizations": {
+    "vscode": {
+      "settings": {},
+      "extensions": [
+        "ms-vscode.cpptools",
+        "llvm-vs-code-extensions.vscode-clangd",
+        "golang.go"
+      ]
+    }
+  },
+  "postCreateCommand": "sudo chown vscode:vscode /usr/src",
+  "workspaceFolder": "/home/vscode/workspace"
+}
