@@ -16,3 +16,32 @@ Because this is your Citadel, your Arx, your Ignis.
 And with Moat, the fire never reaches your gates. 🔥
 
 ![Story](./images/story.png)
+
+# citadel
+
+Caddy-based web server with hardened security and built-in Automated Detection &amp; Response (ADR).
+
+# vmlinux.h generation notes
+
+This workspace contains a `vmlinux.h` header generated from the running kernel's BTF.
+
+How it was fixed:
+
+- The error `failed to load BTF from /sys/kernel/btf/vmlinux: Invalid argument` occurred because the system `bpftool` (v5.15.x) was too old to parse the kernel 6.10 BTF types.
+- We built a newer `bpftool` from the Linux v6.10 sources, which uses a recent libbpf with support for new BTF kinds.
+
+Steps to regenerate:
+
+1. Install deps (Ubuntu 22.04):
+   - git build-essential clang llvm libelf-dev zlib1g-dev libzstd-dev pkg-config
+2. Build bpftool from kernel tools:
+   - git clone --depth=1 --branch v6.10 https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git /tmp/linux
+   - make -C /tmp/linux/tools/bpf/bpftool -j$(nproc)
+3. Generate header:
+   - /tmp/linux/tools/bpf/bpftool/bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h
+
+Tip: You can also use `bpftool btf dump file /sys/kernel/btf/vmlinux > vmlinux.json` if you want to inspect raw BTF in JSON form.
+
+bpftool version used during this run:
+
+- `/tmp/linux/tools/bpf/bpftool/bpftool -V` => v7.5.0, libbpf v1.5
