@@ -17,9 +17,6 @@ And with Moat, the fire never reaches your gates. 🔥
 
 ![Story](./images/story.png)
 
-# citadel
-
-Caddy-based web server with hardened security and built-in Automated Detection &amp; Response (ADR).
 
 # vmlinux.h generation notes
 
