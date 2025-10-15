@@ -37,7 +37,7 @@ Steps to regenerate:
    ```bash
    git clone --depth=1 --branch v6.10 https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git /tmp/linux
    make -C /tmp/linux/tools/bpf/bpftool -j$(nproc)
-   sudo make install /tmp/linux/tools/bpf/bpftool
+   sudo make install -C /tmp/linux/tools/bpf/bpftool
    ```
 3. Generate header:
    ```bash
