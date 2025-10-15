@@ -1,4 +1,6 @@
 use std::mem::MaybeUninit;
+use std::net::Ipv4Addr;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::anyhow;
@@ -10,6 +12,7 @@ use hyper::body::Bytes;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::{TokioExecutor, TokioTimer};
 use libbpf_rs::skel::{OpenSkel, SkelBuilder};
+use libbpf_rs::{MapCore, MapFlags};
 use nix::net::if_::if_nametoindex;
 use tokio::net::TcpListener;
 
@@ -95,6 +98,19 @@ async fn main() -> Result<()> {
 
             bpf_utils::bpf_attach_to_xdp(&mut skel, ifindex).unwrap();
             println!("BPF sucessfully attached to xdp");
+
+            let block_ip: Ipv4Addr = Ipv4Addr::from_str("192.168.215.0").unwrap();
+
+            let my_ip_key_bytes =
+                &utils::bpf_utils::convert_ip_into_bpf_map_key_bytes(block_ip, 32);
+
+            let map_val = 1_u8;
+
+            skel.maps.recently_banned_ips.update(
+                my_ip_key_bytes,
+                &map_val.to_le_bytes(),
+                MapFlags::ANY,
+            )?;
 
             AppState {
                 skel: Some(Arc::new(skel)),
