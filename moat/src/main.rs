@@ -36,7 +36,7 @@ use crate::app_state::AppState;
 use crate::cli::Args;
 use crate::ssl::{
     ProxyContext, SharedTlsState, TlsMode, install_ring_crypto_provider, load_custom_server_config,
-    run_acme_tls_proxy, run_custom_tls_proxy,
+    run_acme_http01_proxy, run_custom_tls_proxy,
 };
 use crate::utils::bpf_utils;
 
