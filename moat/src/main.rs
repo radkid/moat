@@ -36,7 +36,7 @@ use crate::app_state::AppState;
 use crate::cli::Args;
 use crate::ssl::{
     ProxyContext, SharedTlsState, TlsMode, install_ring_crypto_provider, load_custom_server_config,
-    run_acme_tls_proxy, run_custom_tls_proxy,
+    run_acme_http01_proxy, run_custom_tls_proxy,
 };
 use crate::utils::bpf_utils;
 
@@ -182,17 +182,25 @@ async fn main() -> Result<()> {
                 }))
             }
             TlsMode::Acme => {
-                let listener = TcpListener::bind(args.tls_addr)
+                // Bind both HTTP (for ACME challenges + regular HTTP) and HTTPS
+                let http_listener = TcpListener::bind(args.http_addr)
                     .await
-                    .context("failed to bind TLS socket")?;
-                println!("HTTPS proxy (ACME) listening on https://{}", args.tls_addr);
+                    .context("failed to bind HTTP socket for ACME HTTP-01")?;
+                let https_listener = TcpListener::bind(args.tls_addr)
+                    .await
+                    .context("failed to bind HTTPS socket")?;
+                    
+                println!("HTTP server listening on http://{} (ACME HTTP-01 challenges + regular HTTP)", args.http_addr);
+                println!("HTTPS server (ACME) listening on https://{}", args.tls_addr);
+                
                 let tls_state_clone = tls_state.clone();
                 let shutdown = shutdown_rx.clone();
                 let args_clone = args.clone();
                 let skel_clone = state.skel.clone();
                 Some(tokio::spawn(async move {
-                    if let Err(err) = run_acme_tls_proxy(
-                        listener,
+                    if let Err(err) = run_acme_http01_proxy(
+                        https_listener,
+                        http_listener,
                         &args_clone,
                         proxy_ctx,
                         tls_state_clone,
@@ -201,7 +209,7 @@ async fn main() -> Result<()> {
                     )
                     .await
                     {
-                        eprintln!("ACME TLS proxy terminated: {err:?}");
+                        eprintln!("ACME HTTP-01 proxy terminated: {err:?}");
                     }
                 }))
             }
