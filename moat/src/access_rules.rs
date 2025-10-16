@@ -92,9 +92,12 @@ async fn fetch_access_rules(
             let body: ErrorResponse = response.json().await?;
             Err(format!("API Error: {}", body.error).into())
         }
-        status => {
-            Err(format!("Unexpected API status code: {} - {}", status.as_u16(), status.canonical_reason().unwrap_or("Unknown")).into())
-        }
+        status => Err(format!(
+            "Unexpected API status code: {} - {}",
+            status.as_u16(),
+            status.canonical_reason().unwrap_or("Unknown")
+        )
+        .into()),
     }
 }
 

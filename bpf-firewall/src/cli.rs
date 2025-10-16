@@ -11,17 +11,8 @@ pub struct Args {
     #[arg(long, default_value = "0.0.0.0:8080")]
     pub control_addr: SocketAddr,
 
-<<<<<<< HEAD
-    /// HTTP server bind address (for ACME HTTP-01 challenges and regular HTTP traffic).
-    #[arg(long, default_value = "0.0.0.0:80")]
-    pub http_addr: SocketAddr,
-
-    /// HTTPS reverse-proxy bind address.
-    #[arg(long, default_value = "0.0.0.0:443")]
-=======
     /// HTTPS reverse-proxy bind address.
     #[arg(long, default_value = "0.0.0.0:8443")]
->>>>>>> main
     pub tls_addr: SocketAddr,
 
     /// TLS operating mode.
@@ -75,11 +66,4 @@ pub struct Args {
     /// The network interface to attach the XDP program to.
     #[arg(short, long, default_value = "eth0")]
     pub iface: String,
-
-    #[arg(long)]
-    pub arxignis_api_key: String,
-
-    // TODO: make it be able to add a list of ids
-    #[arg(long)]
-    pub arxignis_rule_id: String,
 }

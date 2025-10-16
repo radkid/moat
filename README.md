@@ -17,7 +17,10 @@ And with Moat, the fire never reaches your gates. 🔥
 
 ![Story](./images/story.png)
 
+<<<<<<< HEAD
 
+=======
+>>>>>>> main
 # vmlinux.h generation notes
 
 This workspace contains a `vmlinux.h` header generated from the running kernel's BTF.
@@ -29,16 +32,24 @@ How it was fixed:
 
 Steps to regenerate:
 
-1. Install deps (Ubuntu 22.04):
-   - git build-essential clang llvm libelf-dev zlib1g-dev libzstd-dev pkg-config
+1. Install deps (Ubuntu 24.04):
+   ```bash
+   sudo apt-get install -y git build-essential clang llvm libelf-dev \
+    zlib1g-dev libzstd-dev pkg-config libcap-dev binutils-multiarch-dev
+   ```
 2. Build bpftool from kernel tools:
-   - git clone --depth=1 --branch v6.10 https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git /tmp/linux
-   - make -C /tmp/linux/tools/bpf/bpftool -j$(nproc)
+   ```bash
+   git clone --depth=1 --branch v6.10 https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git /tmp/linux
+   make -C /tmp/linux/tools/bpf/bpftool -j$(nproc)
+   sudo make install -C /tmp/linux/tools/bpf/bpftool
+   ```
 3. Generate header:
-   - /tmp/linux/tools/bpf/bpftool/bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h
+   ```bash
+   /usr/local/sbin/bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h
+   ```
 
-Tip: You can also use `bpftool btf dump file /sys/kernel/btf/vmlinux > vmlinux.json` if you want to inspect raw BTF in JSON form.
+Tip: You can also use `/usr/local/sbin/bpftool btf dump file /sys/kernel/btf/vmlinux > vmlinux.json` if you want to inspect raw BTF in JSON form.
 
 bpftool version used during this run:
 
-- `/tmp/linux/tools/bpf/bpftool/bpftool -V` => v7.5.0, libbpf v1.5
+- `/usr/local/sbin/bpftool -V` => v7.5.0, libbpf v1.5
