@@ -99,7 +99,7 @@ async fn main() -> Result<()> {
             bpf_utils::bpf_attach_to_xdp(&mut skel, ifindex).unwrap();
             println!("BPF sucessfully attached to xdp");
 
-            let block_ip: Ipv4Addr = Ipv4Addr::from_str("192.168.215.0").unwrap();
+            let block_ip: Ipv4Addr = Ipv4Addr::from_str("192.168.215.123").unwrap();
 
             let my_ip_key_bytes =
                 &utils::bpf_utils::convert_ip_into_bpf_map_key_bytes(block_ip, 32);

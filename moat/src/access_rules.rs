@@ -236,15 +236,10 @@ fn apply_rules_to_skel(
         }
     }
 
-    println!("applying {} IPv4 prefixes", to_block.len());
-
     let mut fw = MOATFirewall::new(skel);
     for (net, prefix) in to_block {
-        println!("adding {}/{} to map", net, prefix);
         if let Err(e) = fw.ban_ip(net, prefix) {
             eprintln!("map update failed for {}/{}: {}", net, prefix, e);
-        } else {
-            println!("Added {}/{} to banned", net, prefix);
         }
     }
 
