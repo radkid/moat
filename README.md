@@ -17,9 +17,6 @@ And with Moat, the fire never reaches your gates. 🔥
 
 ![Story](./images/story.png)
 
-# Run locally
-
-
 ## Docker build
 ```
 docker build -t moat .
