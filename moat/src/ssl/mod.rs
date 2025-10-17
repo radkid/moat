@@ -9,12 +9,12 @@ use std::sync::{Arc, OnceLock};
 use std::task::{Context as TaskContext, Poll};
 
 use crate::cli::Args;
+use crate::domain_filter::DomainFilter;
 use crate::{bpf, utils::bpf_utils};
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use bytes::Bytes;
 use clap::ValueEnum;
-use futures::StreamExt;
 use futures_rustls::rustls::{ClientConfig as AcmeClientConfig, RootCertStore};
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
@@ -30,8 +30,12 @@ use libbpf_rs::{MapCore, MapFlags};
 use redis::aio::ConnectionManager;
 use redis::{AsyncCommands, RedisError};
 use rustls::ServerConfig;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use rustls_acme::{AccountCache, AcmeConfig, CertCache, UseChallenge};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+use rustls_acme::{AccountCache, CertCache};
+use instant_acme::{
+    Account, AccountCredentials, ChallengeType, Identifier, LetsEncrypt, 
+    NewAccount, NewOrder, OrderStatus,
+};
 use rustls_pemfile::{certs, private_key};
 use serde::Serialize;
 use serde::ser::Serializer;
@@ -402,8 +406,10 @@ pub fn json(s: &str) -> Response<Full<Bytes>> {
 pub struct ProxyContext {
     pub client: Client<HttpConnector, Full<Bytes>>,
     pub upstream: Uri,
+    pub domain_filter: DomainFilter,
 }
 
+#[derive(Clone)]
 pub struct RedisAcmeCache {
     pub prefix: String,
     pub connection: Arc<Mutex<ConnectionManager>>,
@@ -520,6 +526,228 @@ pub fn load_private_key(path: &Path) -> Result<PrivateKeyDer<'static>> {
         .with_context(|| format!("failed to parse private key in {:?}", path))?
         .ok_or_else(|| anyhow!("no private key found in {:?}", path))?;
     Ok(key)
+}
+
+// Type alias for challenge storage
+type ChallengeStore = Arc<RwLock<std::collections::HashMap<String, String>>>;
+
+// Helper function to load or create instant-acme account
+async fn load_or_create_account(
+    cache: &RedisAcmeCache,
+    directory_url: &str,
+    contacts: &[String],
+) -> Result<Account> {
+    let account_key = cache.key("account", &[], directory_url, contacts);
+    let mut conn = cache.connection.lock().await;
+    
+    // Try to load existing account
+    if let Ok(Some(account_data)) = conn.get::<_, Option<Vec<u8>>>(&account_key).await {
+        // Deserialize account credentials
+        if let Ok(credentials) = serde_json::from_slice::<AccountCredentials>(&account_data) {
+            if let Ok(account) = Account::from_credentials(credentials).await {
+                println!("Loaded existing ACME account from cache");
+                return Ok(account);
+            }
+        }
+    }
+    
+    // Create new account
+    println!("Creating new ACME account");
+    let url = if directory_url.contains("staging") || directory_url.contains("pebble") {
+        instant_acme::LetsEncrypt::Staging.url()
+    } else {
+        instant_acme::LetsEncrypt::Production.url()
+    };
+    
+    let contacts: Vec<&str> = contacts.iter().map(|s| s.as_str()).collect();
+    let (account, credentials) = Account::create(
+        &NewAccount {
+            contact: &contacts,
+            terms_of_service_agreed: true,
+            only_return_existing: false,
+        },
+        url,
+        None,
+    )
+    .await?;
+    
+    // Store account credentials
+    let credentials_json = serde_json::to_vec(&credentials)?;
+    let _: () = conn.set(&account_key, &credentials_json).await?;
+    
+    Ok(account)
+}
+
+// Helper to load private key from Redis
+async fn load_private_key_from_redis(
+    cache: &RedisAcmeCache,
+    domains: &[String],
+    directory_url: &str,
+) -> Result<Option<PrivateKeyDer<'static>>> {
+    let key = cache.key("privkey", domains, directory_url, &[]);
+    let mut conn = cache.connection.lock().await;
+    
+    if let Some(der_bytes) = conn.get::<_, Option<Vec<u8>>>(&key).await? {
+        Ok(Some(PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(der_bytes))))
+    } else {
+        Ok(None)
+    }
+}
+
+// Helper to store private key in Redis
+async fn store_private_key_in_redis(
+    cache: &RedisAcmeCache,
+    domains: &[String],
+    directory_url: &str,
+    private_key_der: &[u8],
+) -> Result<()> {
+    let key = cache.key("privkey", domains, directory_url, &[]);
+    let mut conn = cache.connection.lock().await;
+    conn.set::<_, _, ()>(key, private_key_der).await?;
+    Ok(())
+}
+
+// Parse PEM certificate chain
+fn parse_cert_chain(pem: &str) -> Result<Vec<CertificateDer<'static>>> {
+    let mut cursor = std::io::Cursor::new(pem.as_bytes());
+    Ok(certs(&mut cursor)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .map(|cert| cert.into_owned())
+        .collect())
+}
+
+// Manage ACME certificate lifecycle with instant-acme
+async fn manage_acme_certificate(
+    domains: Vec<String>,
+    directory_url: String,
+    contacts: Vec<String>,
+    cache: RedisAcmeCache,
+    cert_config: Arc<RwLock<Option<Arc<ServerConfig>>>>,
+    challenge_store: ChallengeStore,
+) -> Result<()> {
+    // Try to load existing certificate
+    if let Ok(Some(cert_pem_bytes)) = cache.load_cert(&domains, &directory_url).await {
+        if let Ok(cert_pem) = String::from_utf8(cert_pem_bytes) {
+            if let Ok(certs) = parse_cert_chain(&cert_pem) {
+                if let Ok(Some(private_key)) = load_private_key_from_redis(&cache, &domains, &directory_url).await {
+                    println!("Loaded existing certificate from cache");
+                    let config = ServerConfig::builder()
+                        .with_no_client_auth()
+                        .with_single_cert(certs, private_key)?;
+                    *cert_config.write().await = Some(Arc::new(config));
+                    return Ok(());
+                }
+            }
+        }
+    }
+    
+    // Need to obtain new certificate
+    println!("Obtaining new ACME certificate for {:?}", domains);
+    
+    let account = load_or_create_account(&cache, &directory_url, &contacts).await?;
+    
+    // Create order
+    let identifiers: Vec<Identifier> = domains
+        .iter()
+        .map(|d| Identifier::Dns(d.clone()))
+        .collect();
+    
+    let mut order = account
+        .new_order(&NewOrder {
+            identifiers: &identifiers,
+        })
+        .await?;
+    
+    // Process authorizations
+    let authorizations = order.authorizations().await?;
+    for authz in &authorizations {
+        // Find HTTP-01 challenge
+        let challenge = authz
+            .challenges
+            .iter()
+            .find(|c| c.r#type == ChallengeType::Http01)
+            .ok_or_else(|| anyhow!("No HTTP-01 challenge found"))?;
+        
+        // Get key authorization
+        let key_auth = order.key_authorization(challenge).as_str().to_string();
+        
+        // Store challenge response
+        {
+            let mut store = challenge_store.write().await;
+            store.insert(challenge.token.clone(), key_auth.clone());
+        }
+        
+        println!("Set HTTP-01 challenge for token: {}", challenge.token);
+        
+        // Notify ACME server to validate
+        order.set_challenge_ready(&challenge.url).await?;
+    }
+    
+    // Wait for order to be ready
+    let mut tries = 0;
+    let state = loop {
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        let state = order.refresh().await?;
+        if let OrderStatus::Ready | OrderStatus::Invalid = state.status {
+            break state;
+        }
+        tries += 1;
+        if tries >= 10 {
+            return Err(anyhow!("Order status: {:?}, gave up after {} tries", state.status, tries));
+        }
+    };
+    
+    if state.status == OrderStatus::Invalid {
+        return Err(anyhow!("Order became invalid"));
+    }
+    
+    println!("Order status: Ready");
+    
+    // Generate private key and CSR
+    let private_key = rcgen::KeyPair::generate()?;
+    
+    // Create certificate parameters for CSR
+    let mut params = rcgen::CertificateParams::new(domains.clone())?;
+    params.distinguished_name = rcgen::DistinguishedName::new();
+    
+    // Generate CSR (Certificate Signing Request)
+    let csr = params.serialize_request(&private_key)?;
+    let csr_der = csr.der();
+
+    // Finalize order with CSR
+    order.finalize(csr_der).await?;
+
+    // Download certificate
+    let cert_chain_pem = loop {
+        match order.certificate().await? {
+            Some(cert) => break cert,
+            None => {
+                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+            }
+        }
+    };
+    
+    println!("Successfully obtained ACME certificate!");
+    
+    // Store certificate in Redis
+    cache.store_cert(&domains, &directory_url, cert_chain_pem.as_bytes()).await?;
+    
+    // Store private key in Redis
+    let private_key_der = private_key.serialize_der();
+    store_private_key_in_redis(&cache, &domains, &directory_url, &private_key_der).await?;
+    
+    // Parse and configure
+    let certs = parse_cert_chain(&cert_chain_pem)?;
+    let private_key_rustls = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(private_key_der));
+    
+    let config = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, private_key_rustls)?;
+    
+    *cert_config.write().await = Some(Arc::new(config));
+    
+    Ok(())
 }
 
 pub fn load_custom_server_config(cert: &Path, key: &Path) -> Result<Arc<ServerConfig>> {
@@ -742,6 +970,22 @@ pub async fn run_custom_tls_proxy(
 
                     match acceptor.await {
                         Ok(start) => {
+                            // Check SNI against domain filter
+                            if ctx_clone.domain_filter.is_enabled() {
+                                let client_hello = start.client_hello();
+                                let sni = client_hello.server_name();
+                                if let Some(sni_str) = sni {
+                                    if !ctx_clone.domain_filter.is_allowed(sni_str) {
+                                        eprintln!("TLS SNI '{}' blocked by domain filter from {}", sni_str, peer_addr);
+                                        return;
+                                    }
+                                } else {
+                                    // No SNI present - block if filter is enabled
+                                    eprintln!("TLS connection without SNI blocked by domain filter from {}", peer_addr);
+                                    return;
+                                }
+                            }
+                            
                             match start.into_stream(config).await {
                                 Ok(tls_stream) => {
                                     if let Err(err) = serve_proxy_conn(tls_stream, Some(peer_addr), ctx_clone.clone()).await {
@@ -779,8 +1023,9 @@ pub async fn run_custom_tls_proxy(
     Ok(())
 }
 
-pub async fn run_acme_tls_proxy(
-    listener: TcpListener,
+pub async fn run_acme_http01_proxy(
+    https_listener: TcpListener,
+    http_listener: TcpListener,
     args: &Args,
     ctx: Arc<ProxyContext>,
     tls_state: SharedTlsState,
@@ -809,103 +1054,215 @@ pub async fn run_acme_tls_proxy(
 
     tls_state
         .set_running_detail(format!(
-            "ACME manager initializing for domains {:?}",
+            "ACME HTTP-01 manager initializing for domains {:?}",
             domains
         ))
         .await;
 
-    let client_config = load_acme_client_config(args.acme_ca_root.as_deref())?;
-    let base_acme_config = AcmeConfig::new_with_client_config(domains.clone(), client_config);
-
-    let acme_config = base_acme_config
-        .contact(contacts.iter().map(|s| s.as_str()))
-        .cache(redis_cache)
-        .challenge_type(UseChallenge::TlsAlpn01);
-
-    let acme_config = if let Some(directory_url) = args.acme_directory.as_ref() {
-        acme_config.directory(directory_url)
+    // Determine directory URL
+    let directory_url = if let Some(dir) = &args.acme_directory {
+        dir.clone()
+    } else if args.acme_use_prod {
+        LetsEncrypt::Production.url().to_string()
     } else {
-        acme_config.directory_lets_encrypt(args.acme_use_prod)
+        LetsEncrypt::Staging.url().to_string()
     };
 
-    let base_listener =
-        FingerprintingTcpListener::new(TcpListenerStream::new(listener), skel.clone());
-    // Wrap the stream to drop banned connections before ACME takes over
-    let fingerprinting_listener =
-        futures::stream::unfold((base_listener, skel.clone()), |(mut l, skel)| {
-            Box::pin(async move {
-                loop {
-                    match l.next().await {
-                        Some(Ok(mut stream)) => {
-                            let peer = match stream.peer_addr() {
-                                Ok(p) => p,
-                                Err(_) => {
-                                    continue;
-                                }
-                            };
-                            if is_ipv4_banned(peer, &skel) {
-                                let _ = stream.write_all(BANNED_MESSAGE.as_bytes()).await;
-                                let _ = stream.shutdown().await;
-                                continue;
-                            }
-                            // Wrap the stream in Ok to match expected Result type
-                            return Some((Ok(stream), (l, skel)));
-                        }
-                        Some(Err(e)) => {
-                            // Yield the error as Err
-                            return Some((Err(e), (l, skel)));
-                        }
-                        None => return None,
-                    }
-                }
-            })
-        });
-    let mut incoming = acme_config.tokio_incoming(
-        fingerprinting_listener,
-        vec![b"http/1.1".to_vec(), b"acme-tls/1".to_vec()],
-    );
+    // Shared certificate configuration
+    let cert_config: Arc<RwLock<Option<Arc<ServerConfig>>>> = Arc::new(RwLock::new(None));
+    
+    // Shared challenge storage
+    let challenge_store: ChallengeStore = Arc::new(RwLock::new(std::collections::HashMap::new()));
+
+    // Spawn ACME certificate manager task
+    let cert_config_clone = cert_config.clone();
+    let challenge_store_clone = challenge_store.clone();
+    let domains_clone = domains.clone();
+    let directory_url_clone = directory_url.clone();
+    let contacts_clone = contacts.clone();
+    let redis_cache_clone = redis_cache.clone();
+    let tls_state_clone = tls_state.clone();
+    
+    tokio::spawn(async move {
+        if let Err(err) = manage_acme_certificate(
+            domains_clone,
+            directory_url_clone,
+            contacts_clone,
+            redis_cache_clone,
+            cert_config_clone,
+            challenge_store_clone,
+        ).await {
+            eprintln!("ACME certificate manager error: {err:?}");
+            tls_state_clone.set_error_detail(format!("ACME error: {err}")).await;
+        }
+    });
 
     tls_state
-        .set_running_detail("ACME certificate manager running")
+        .set_running_detail("ACME HTTP-01 certificate manager running")
         .await;
 
+    // Spawn HTTP server for ACME challenges and regular HTTP traffic
+    let http_ctx = ctx.clone();
+    let http_skel = skel.clone();
+    let mut http_shutdown = shutdown.clone();
+    let challenges_http = challenge_store.clone();
+    
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                accept = http_listener.accept() => {
+                    match accept {
+                        Ok((stream, peer)) => {
+                            // Check if banned
+                            if is_ipv4_banned(peer, &http_skel) {
+                                let mut s = stream;
+                                let _ = s.write_all(BANNED_MESSAGE.as_bytes()).await;
+                                let _ = s.shutdown().await;
+                                continue;
+                            }
+
+                            let ctx_clone = http_ctx.clone();
+                            let challenges = challenges_http.clone();
+                            
+                            tokio::spawn(async move {
+                                let io = TokioIo::new(stream);
+                                let ctx_service = ctx_clone.clone();
+                                let challenges_service = challenges.clone();
+                                
+                                let service = service_fn(move |req: Request<Incoming>| {
+                                    let path = req.uri().path().to_string();
+                                    let challenges_req = challenges_service.clone();
+                                    let ctx_req = ctx_service.clone();
+                                    
+                                    async move {
+                                        if path.starts_with("/.well-known/acme-challenge/") {
+                                            if let Some(token) = path.strip_prefix("/.well-known/acme-challenge/") {
+                                                let store = challenges_req.read().await;
+                                                if let Some(key_auth) = store.get(token) {
+                                                    let response = Response::builder()
+                                                        .status(StatusCode::OK)
+                                                        .header("Content-Type", "text/plain")
+                                                        .body(Full::new(Bytes::from(key_auth.clone())).map_err(|e| match e {}).boxed())
+                                                        .unwrap();
+                                                    return Ok(response);
+                                                }
+                                            }
+                                            let response = Response::builder()
+                                                .status(StatusCode::NOT_FOUND)
+                                                .body(Full::new(Bytes::from("Challenge not found")).map_err(|e| match e {}).boxed())
+                                                .unwrap();
+                                            return Ok(response);
+                                        } else {
+                                            proxy_http_service(req, ctx_req, Some(peer)).await
+                                        }
+                                    }
+                                });
+
+                                if let Err(err) = http1::Builder::new()
+                                    .serve_connection(io, service)
+                                    .await
+                                {
+                                    eprintln!("HTTP connection error from {peer}: {err}");
+                                }
+                            });
+                        }
+                        Err(err) => {
+                            eprintln!("HTTP accept error: {err}");
+                        }
+                    }
+                }
+                _ = http_shutdown.changed() => {
+                    if *http_shutdown.borrow() {
+                        println!("HTTP server shutdown signal received");
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    // HTTPS server loop
     loop {
         tokio::select! {
-            next_conn = incoming.next() => {
-                match next_conn {
-                    Some(Ok(tls_stream)) => {
+            accept = https_listener.accept() => {
+                match accept {
+                    Ok((stream, peer)) => {
+                        // Check if banned
+                        if is_ipv4_banned(peer, &skel) {
+                            let mut s = stream;
+                            let _ = s.write_all(BANNED_MESSAGE.as_bytes()).await;
+                            let _ = s.shutdown().await;
+                            continue;
+                        }
+
+                        let cert_cfg = cert_config.read().await.clone();
+                        let Some(config) = cert_cfg else {
+                            eprintln!("HTTPS connection from {peer} but certificate not ready yet");
+                            continue;
+                        };
+
                         let ctx_clone = ctx.clone();
                         let tls_state_clone = tls_state.clone();
-                        let peer = tls_stream
-                            .get_ref()
-                            .get_ref()
-                            .0
-                            .get_ref()
-                            .peer_addr()
-                            .ok();
+                        
                         tokio::spawn(async move {
-                            if let Err(err) =
-                                serve_proxy_conn(tls_stream, peer, ctx_clone).await
-                            {
-                                eprintln!("ACME TLS proxy error: {err:?}");
-                                tls_state_clone.set_error_detail(format!("TLS session error: {err}")).await;
-                            } else {
-                                tls_state_clone.set_running_detail("ACME certificate active").await;
+                            let stream = match FingerprintTcpStream::new(stream).await {
+                                Ok(s) => {
+                                    log_tls_fingerprint(s.peer_addr(), s.fingerprint());
+                                    s
+                                }
+                                Err(err) => {
+                                    eprintln!("failed to prepare TLS stream from {peer}: {err}");
+                                    return;
+                                }
+                            };
+
+                            let acceptor = LazyConfigAcceptor::new(rustls::server::Acceptor::default(), stream);
+                            match acceptor.await {
+                                Ok(start) => {
+                                    // Check SNI against domain filter
+                                    if ctx_clone.domain_filter.is_enabled() {
+                                        let client_hello = start.client_hello();
+                                        let sni = client_hello.server_name();
+                                        if let Some(sni_str) = sni {
+                                            if !ctx_clone.domain_filter.is_allowed(sni_str) {
+                                                eprintln!("TLS SNI '{}' blocked by domain filter from {}", sni_str, peer);
+                                                return;
+                                            }
+                                        } else {
+                                            // No SNI present - block if filter is enabled
+                                            eprintln!("TLS connection without SNI blocked by domain filter from {}", peer);
+                                            return;
+                                        }
+                                    }
+                                    
+                                    match start.into_stream(config).await {
+                                        Ok(tls_stream) => {
+                                            if let Err(err) = serve_proxy_conn(tls_stream, Some(peer), ctx_clone).await {
+                                                eprintln!("HTTPS proxy error from {peer}: {err:?}");
+                                                tls_state_clone.set_error_detail(format!("HTTPS session error: {err}")).await;
+                                            } else {
+                                                tls_state_clone.set_running_detail("ACME certificate active").await;
+                                            }
+                                        }
+                                        Err(err) => {
+                                            eprintln!("TLS handshake error from {peer}: {err}");
+                                        }
+                                    }
+                                }
+                                Err(err) => {
+                                    eprintln!("TLS accept error from {peer}: {err}");
+                                }
                             }
                         });
                     }
-                    Some(Err(err)) => {
-                        eprintln!("ACME TLS accept error: {err}");
-                        tls_state
-                            .set_error_detail(format!("ACME accept error: {err}"))
-                            .await;
+                    Err(err) => {
+                        eprintln!("HTTPS accept error: {err}");
                     }
-                    None => break,
                 }
             }
-            changed = shutdown.changed() => {
-                if changed.is_ok() && *shutdown.borrow() {
-                    println!("ACME TLS proxy shutdown signal received");
+            _ = shutdown.changed() => {
+                if *shutdown.borrow() {
+                    println!("HTTPS server shutdown signal received");
                     break;
                 }
             }
