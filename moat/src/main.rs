@@ -20,6 +20,7 @@ pub mod access_log;
 pub mod access_rules;
 pub mod app_state;
 pub mod cli;
+pub mod domain_filter;
 pub mod firewall;
 pub mod http;
 pub mod ssl;
@@ -35,6 +36,7 @@ use tokio::sync::watch;
 
 use crate::app_state::AppState;
 use crate::cli::Args;
+use crate::domain_filter::DomainFilter;
 use crate::ssl::{
     ProxyContext, SharedTlsState, TlsMode, install_ring_crypto_provider, load_custom_server_config,
     run_acme_http01_proxy, run_custom_tls_proxy,
@@ -100,6 +102,7 @@ async fn main() -> Result<()> {
             bpf_utils::bpf_attach_to_xdp(&mut skel, ifindex).unwrap();
             println!("BPF sucessfully attached to xdp");
 
+
             let block_ip: Ipv4Addr = Ipv4Addr::from_str("192.168.215.123").unwrap();
 
             let my_ip_key_bytes =
@@ -155,7 +158,26 @@ async fn main() -> Result<()> {
         builder.timer(TokioTimer::new());
         builder.pool_timer(TokioTimer::new());
         let client: Client<_, Full<Bytes>> = builder.build_http();
-        let proxy_ctx = Arc::new(ProxyContext { client, upstream });
+        
+        // Create domain filter from CLI arguments
+        let domain_filter = DomainFilter::new(
+            args.domain_whitelist.clone(),
+            args.domain_wildcards.clone(),
+        );
+        
+        if domain_filter.is_enabled() {
+            println!(
+                "Domain filtering enabled: {} whitelist entries, {} wildcard patterns",
+                args.domain_whitelist.len(),
+                args.domain_wildcards.len()
+            );
+        }
+        
+        let proxy_ctx = Arc::new(ProxyContext {
+            client,
+            upstream,
+            domain_filter,
+        });
         match args.tls_mode {
             TlsMode::Custom => {
                 let cert = args.tls_cert_path.as_ref().unwrap();
@@ -191,9 +213,10 @@ async fn main() -> Result<()> {
                 let https_listener = TcpListener::bind(args.tls_addr)
                     .await
                     .context("failed to bind HTTPS socket")?;
-
+                    
                 println!("HTTP server listening on http://{} (ACME HTTP-01 challenges + regular HTTP)", args.http_addr);
                 println!("HTTPS server (ACME) listening on https://{}", args.tls_addr);
+                
 
                 let tls_state_clone = tls_state.clone();
                 let shutdown = shutdown_rx.clone();

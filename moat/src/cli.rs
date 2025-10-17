@@ -80,4 +80,15 @@ pub struct Args {
     // TODO: make it be able to add a list of ids
     #[arg(long)]
     pub arxignis_rule_id: String,
+
+    /// Domain whitelist (exact matches, comma separated or repeated).
+    /// If specified, only requests to these domains will be allowed.
+    #[arg(long, value_delimiter = ',', num_args = 0..)]
+    pub domain_whitelist: Vec<String>,
+
+    /// Domain wildcard patterns (comma separated or repeated).
+    /// Supports wildcards: *.example.com, api.*.example.com
+    /// If specified along with whitelist, both are checked (OR logic).
+    #[arg(long, value_delimiter = ',', num_args = 0..)]
+    pub domain_wildcards: Vec<String>,
 }
