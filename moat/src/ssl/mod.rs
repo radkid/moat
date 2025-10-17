@@ -7,6 +7,9 @@ use std::path::Path;
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 use std::task::{Context as TaskContext, Poll};
+use std::env;
+use gethostname::gethostname;
+use local_ip_address::local_ip;
 
 use crate::cli::Args;
 use crate::domain_filter::DomainFilter;
@@ -49,6 +52,22 @@ use tokio_rustls::LazyConfigAcceptor;
 use tokio_stream::wrappers::TcpListenerStream;
 
 use self::tls_fingerprint::{fingerprint_client_hello, Fingerprint as TlsFingerprint};
+
+#[derive(Clone, Debug)]
+pub struct ServerCertInfo {
+    pub subject: String,
+    pub issuer: String,
+    pub serial_number: String,
+    pub not_before: String,
+    pub not_after: String,
+    pub fingerprint_sha256: String,
+}
+
+#[derive(Clone)]
+pub struct ServerConfigWithCert {
+    pub config: Arc<ServerConfig>,
+    pub cert_info: Option<ServerCertInfo>,
+}
 
 #[derive(ValueEnum, Copy, Clone, Debug, PartialEq, Eq)]
 pub enum TlsMode {
@@ -407,6 +426,7 @@ pub struct ProxyContext {
     pub client: Client<HttpConnector, Full<Bytes>>,
     pub upstream: Uri,
     pub domain_filter: DomainFilter,
+    pub tls_only: bool,
 }
 
 #[derive(Clone)]
@@ -625,7 +645,7 @@ async fn manage_acme_certificate(
     directory_url: String,
     contacts: Vec<String>,
     cache: RedisAcmeCache,
-    cert_config: Arc<RwLock<Option<Arc<ServerConfig>>>>,
+    cert_config: Arc<RwLock<Option<ServerConfigWithCert>>>,
     challenge_store: ChallengeStore,
 ) -> Result<()> {
     // Try to load existing certificate
@@ -638,8 +658,12 @@ async fn manage_acme_certificate(
                     println!("Loaded existing certificate from cache");
                     let config = ServerConfig::builder()
                         .with_no_client_auth()
-                        .with_single_cert(certs, private_key)?;
-                    *cert_config.write().await = Some(Arc::new(config));
+                        .with_single_cert(certs.clone(), private_key)?;
+                    let cert_info = extract_cert_info_from_der(&certs[0]);
+                    *cert_config.write().await = Some(ServerConfigWithCert {
+                        config: Arc::new(config),
+                        cert_info,
+                    });
                     return Ok(());
                 }
             }
@@ -705,7 +729,8 @@ async fn manage_acme_certificate(
     };
 
     if state.status == OrderStatus::Invalid {
-        return Err(anyhow!("Order became invalid"));
+        println!("Order became invalid after {} tries and status: {:?}", tries, state.status);
+        return Err(anyhow!("Order became invalid after {} tries and status: {:?}", tries, state.status));
     }
 
     println!("Order status: Ready");
@@ -757,16 +782,24 @@ async fn manage_acme_certificate(
 
     let config = ServerConfig::builder()
         .with_no_client_auth()
-        .with_single_cert(certs, private_key_rustls)?;
+        .with_single_cert(certs.clone(), private_key_rustls)?;
 
-    *cert_config.write().await = Some(Arc::new(config));
+    let cert_info = extract_cert_info_from_der(&certs[0]);
+    *cert_config.write().await = Some(ServerConfigWithCert {
+        config: Arc::new(config),
+        cert_info,
+    });
 
     Ok(())
 }
 
-pub fn load_custom_server_config(cert: &Path, key: &Path) -> Result<Arc<ServerConfig>> {
+pub fn load_custom_server_config(cert: &Path, key: &Path) -> Result<ServerConfigWithCert> {
     let certs = load_certificates(cert)?;
     let key = load_private_key(key)?;
+
+    // Extract certificate info from the first certificate
+    let cert_info = extract_cert_info_from_der(&certs[0]);
+
     let config = ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(certs, key)
@@ -775,7 +808,10 @@ pub fn load_custom_server_config(cert: &Path, key: &Path) -> Result<Arc<ServerCo
     Arc::get_mut(&mut config)
         .expect("arc get mutable")
         .alpn_protocols = vec![b"http/1.1".to_vec()];
-    Ok(config)
+    Ok(ServerConfigWithCert {
+        config,
+        cert_info,
+    })
 }
 
 pub fn ensure_mailto(contact: &str) -> String {
@@ -784,6 +820,56 @@ pub fn ensure_mailto(contact: &str) -> String {
     } else {
         format!("mailto:{contact}")
     }
+}
+
+pub fn extract_cert_info_from_der(cert_der: &CertificateDer<'static>) -> Option<ServerCertInfo> {
+    use x509_parser::prelude::*;
+
+    // Parse the X.509 certificate
+    let (_, cert) = X509Certificate::from_der(cert_der.as_ref()).ok()?;
+
+    // Extract subject
+    let subject = cert.subject().to_string();
+
+    // Extract issuer
+    let issuer = cert.issuer().to_string();
+
+    // Extract serial number
+    let serial_number = format!("{:X}", cert.serial);
+
+    // Extract validity dates
+    let validity = cert.validity();
+    let not_before = validity.not_before.to_string();
+    let not_after = validity.not_after.to_string();
+
+    // Calculate SHA256 fingerprint
+    let fingerprint_sha256 = format!("{:x}", sha2::Sha256::digest(cert_der.as_ref()));
+
+    Some(ServerCertInfo {
+        subject,
+        issuer,
+        serial_number,
+        not_before,
+        not_after,
+        fingerprint_sha256,
+    })
+}
+
+pub fn extract_server_cert_info(_config: &ServerConfig) -> Option<ServerCertInfo> {
+    // For now, we'll create a basic certificate info with a placeholder fingerprint
+    // The actual certificate parsing would require additional dependencies
+    // In a production system, you'd want to parse the X.509 certificate properly
+
+    // Create a placeholder certificate info
+    // TODO: Parse actual X.509 certificate to extract real subject, issuer, etc.
+    Some(ServerCertInfo {
+        subject: "CN=placeholder".to_string(),
+        issuer: "CN=placeholder-issuer".to_string(),
+        serial_number: "0000000000000000000000000000000000000000".to_string(),
+        not_before: "2024-01-01T00:00:00Z".to_string(),
+        not_after: "2025-01-01T00:00:00Z".to_string(),
+        fingerprint_sha256: "placeholder_fingerprint".to_string(),
+    })
 }
 
 pub fn build_upstream_uri(incoming: &Uri, upstream: &Uri) -> Result<Uri> {
@@ -856,8 +942,11 @@ async fn log_access_request_with_body(
     req_parts: &hyper::http::request::Parts,
     req_body_bytes: &bytes::Bytes,
     response: &Response<ProxyBody>,
+    response_body_bytes: &bytes::Bytes,
     _peer: SocketAddr,
     tls_fingerprint: Option<&TlsFingerprint>,
+    ctx: &ProxyContext,
+    server_cert_info: Option<&ServerCertInfo>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Create a simplified access log for now
     let timestamp = chrono::Utc::now();
@@ -869,10 +958,21 @@ async fn log_access_request_with_body(
         .scheme()
         .map(|s| s.to_string())
         .unwrap_or_else(|| "http".to_string());
-    let host = uri.host().unwrap_or("unknown").to_string();
-    let port = uri
-        .port_u16()
-        .unwrap_or(if scheme == "https" { 443 } else { 80 });
+    // Extract host and port from Host header or URI
+    let host_header = req_parts.headers.get("host")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("unknown");
+
+    // Parse host:port from Host header
+    let (host, port) = if let Some(colon_pos) = host_header.find(':') {
+        let host_part = &host_header[..colon_pos];
+        let port_part = host_header[colon_pos + 1..].parse::<u16>().unwrap_or_else(|_| {
+            if scheme == "https" { 443 } else { 80 }
+        });
+        (host_part.to_string(), port_part)
+    } else {
+        (host_header.to_string(), if scheme == "https" { 443 } else { 80 })
+    };
     let path = uri.path().to_string();
     let query = uri.query().unwrap_or("").to_string();
 
@@ -919,6 +1019,14 @@ async fn log_access_request_with_body(
             "body_sha256": body_sha256,
             "body_truncated": false
         },
+        "server": {
+            "hostname": gethostname().to_string_lossy(),
+            "ipaddress": local_ip().map(|ip| ip.to_string()).unwrap_or_else(|_| "unknown".to_string()),
+            "upstream": {
+                "hostname": ctx.upstream.host().unwrap_or("unknown").to_string(),
+                "port": ctx.upstream.port_u16().unwrap_or(if scheme == "https" { 443 } else { 80 }),
+            },
+        },
         "tls": tls_fingerprint.map(|fp| serde_json::json!({
             "version": fp.tls_version,
             "cipher": "TLS_AES_128_GCM_SHA256", // TODO: extract actual cipher
@@ -929,18 +1037,28 @@ async fn log_access_request_with_body(
             "ja4l": "0_0_64", // TODO: calculate actual JA4L
             "ja4t": fp.ja4_unsorted,
             "ja4h": fp.ja4_unsorted,
-            "server_cert": null // TODO: extract server certificate details
+            "server_cert": server_cert_info.map(|cert| serde_json::json!({
+                "subject": cert.subject,
+                "issuer": cert.issuer,
+                "serial_number": cert.serial_number,
+                "not_before": cert.not_before,
+                "not_after": cert.not_after,
+                "fingerprint_sha256": cert.fingerprint_sha256
+            }))
         })),
         "response": {
             "status": response.status().as_u16(),
             "status_text": response.status().canonical_reason().unwrap_or("Unknown"),
             "content_type": response.headers().get("content-type").and_then(|h| h.to_str().ok()),
             "content_length": response.headers().get("content-length").and_then(|h| h.to_str().ok()).and_then(|s| s.parse::<u64>().ok()),
-            "body": "" // Response body is consumed, would need to capture
+            "headers": response.headers().iter().map(|(name, value)| (name.to_string(), value.to_str().unwrap_or("").to_string())).collect::<std::collections::HashMap<String, String>>(),
+            "body": String::from_utf8_lossy(response_body_bytes).to_string(),
+            "body_sha256": format!("{:x}", sha2::Sha256::digest(response_body_bytes)),
+            "body_truncated": false
         }
     });
 
-    println!("{}", serde_json::to_string_pretty(&access_log)?);
+    println!("{}", serde_json::to_string(&access_log)?);
     Ok(())
 }
 
@@ -949,6 +1067,7 @@ pub async fn proxy_http_service(
     ctx: Arc<ProxyContext>,
     peer: Option<SocketAddr>,
     tls_fingerprint: Option<&TlsFingerprint>,
+    server_cert_info: Option<ServerCertInfo>,
 ) -> Result<Response<ProxyBody>, Infallible> {
     let peer_addr = peer.unwrap_or_else(|| "0.0.0.0:0".parse().unwrap());
 
@@ -965,15 +1084,45 @@ pub async fn proxy_http_service(
         }
     };
 
+    // Check TLS-only mode: if enabled and no TLS fingerprint, don't forward
+    if ctx.tls_only && tls_fingerprint.is_none() {
+        // For ACME challenges, we need to allow HTTP requests
+        let is_acme_challenge = req_parts.uri.path().starts_with("/.well-known/acme-challenge/");
+
+        if !is_acme_challenge {
+            // Not an ACME challenge and no TLS - return 426 Upgrade Required
+            return Ok(build_proxy_error_response(
+                StatusCode::UPGRADE_REQUIRED,
+                "tls_required",
+            ));
+        }
+    }
+
     match forward_to_upstream_with_body(&req_parts, req_body_bytes.clone(), ctx.clone()).await {
-        Ok(response) => {
+        Ok(mut response) => {
+            // Capture response body for logging
+            let (response_parts, response_body) = response.into_parts();
+            let response_body_bytes = match response_body.collect().await {
+                Ok(collected) => collected.to_bytes(),
+                Err(e) => {
+                    eprintln!("Failed to read response body: {}", e);
+                    bytes::Bytes::new()
+                }
+            };
+
+            // Reconstruct response
+            let response = Response::from_parts(response_parts, Full::new(response_body_bytes.clone()).map_err(|never| match never {}).boxed());
+
             // Log successful requests
             if let Err(e) = log_access_request_with_body(
                 &req_parts,
                 &req_body_bytes,
                 &response,
+                &response_body_bytes,
                 peer_addr,
                 tls_fingerprint,
+                &ctx,
+                server_cert_info.as_ref(),
             )
             .await
             {
@@ -1000,6 +1149,7 @@ pub async fn serve_proxy_conn<S>(
     peer: Option<SocketAddr>,
     ctx: Arc<ProxyContext>,
     tls_fingerprint: Option<&TlsFingerprint>,
+    server_cert_info: Option<ServerCertInfo>,
 ) -> Result<(), anyhow::Error>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -1008,7 +1158,7 @@ where
     http1::Builder::new()
         .serve_connection(
             io,
-            service_fn(move |req| proxy_http_service(req, ctx.clone(), peer, tls_fingerprint)),
+            service_fn(move |req| proxy_http_service(req, ctx.clone(), peer, tls_fingerprint, server_cert_info.clone())),
         )
         .await
         .map_err(|e| anyhow!("http1 connection error: {e}"))
@@ -1018,7 +1168,7 @@ where
 
 pub async fn run_custom_tls_proxy(
     listener: TcpListener,
-    server_config: Arc<ServerConfig>,
+    server_config: ServerConfigWithCert,
     ctx: Arc<ProxyContext>,
     tls_state: SharedTlsState,
     skel: Option<Arc<bpf::FilterSkel<'static>>>,
@@ -1039,7 +1189,7 @@ pub async fn run_custom_tls_proxy(
                 };
                 let ctx_clone = ctx.clone();
                 let tls_state_clone = tls_state.clone();
-                let config = server_config.clone();
+                let server_config_clone = server_config.clone();
                 let skel_clone = skel.clone();
                 tokio::spawn(async move {
                     let stream = match FingerprintTcpStream::new(stream).await {
@@ -1082,9 +1232,9 @@ pub async fn run_custom_tls_proxy(
                                 }
                             }
 
-                            match start.into_stream(config).await {
+                            match start.into_stream(server_config_clone.config.clone()).await {
                                 Ok(tls_stream) => {
-                                    if let Err(err) = serve_proxy_conn(tls_stream, Some(peer_addr), ctx_clone.clone(), fingerprint.as_ref()).await {
+                                    if let Err(err) = serve_proxy_conn(tls_stream, Some(peer_addr), ctx_clone.clone(), fingerprint.as_ref(), server_config_clone.cert_info.clone()).await {
                                         eprintln!("TLS proxy error from {peer_addr}: {err:?}");
                                         tls_state_clone
                                             .set_error_detail(format!("last connection error: {err}"))
@@ -1171,7 +1321,7 @@ pub async fn run_acme_http01_proxy(
     };
 
     // Shared certificate configuration
-    let cert_config: Arc<RwLock<Option<Arc<ServerConfig>>>> = Arc::new(RwLock::new(None));
+    let cert_config: Arc<RwLock<Option<ServerConfigWithCert>>> = Arc::new(RwLock::new(None));
 
     // Spawn ACME certificate manager task
     let cert_config_clone = cert_config.clone();
@@ -1256,7 +1406,7 @@ pub async fn run_acme_http01_proxy(
                                                 .unwrap();
                                             return Ok(response);
                                         } else {
-                                            proxy_http_service(req, ctx_req, Some(peer), None).await
+                                            proxy_http_service(req, ctx_req, Some(peer), None, None).await
                                         }
                                     }
                                 });
@@ -1299,7 +1449,7 @@ pub async fn run_acme_http01_proxy(
                         }
 
                         let cert_cfg = cert_config.read().await.clone();
-                        let Some(config) = cert_cfg else {
+                        let Some(config_with_cert) = cert_cfg else {
                             eprintln!("HTTPS connection from {peer} but certificate not ready yet");
                             continue;
                         };
@@ -1339,9 +1489,9 @@ pub async fn run_acme_http01_proxy(
                                         }
                                     }
 
-                                    match start.into_stream(config).await {
+                                    match start.into_stream(config_with_cert.config.clone()).await {
                                         Ok(tls_stream) => {
-                                            if let Err(err) = serve_proxy_conn(tls_stream, Some(peer), ctx_clone, stream.1.as_ref()).await {
+                                            if let Err(err) = serve_proxy_conn(tls_stream, Some(peer), ctx_clone, stream.1.as_ref(), config_with_cert.cert_info.clone()).await {
                                                 eprintln!("HTTPS proxy error from {peer}: {err:?}");
                                                 tls_state_clone.set_error_detail(format!("HTTPS session error: {err}")).await;
                                             } else {
@@ -1376,185 +1526,69 @@ pub async fn run_acme_http01_proxy(
     Ok(())
 }
 
-// #[tokio::main]
-// async fn main() -> Result<()> {
-// #[tokio::main]
-// async fn main() -> Result<()> {
-//     install_ring_crypto_provider()?;
-//     let args = Args::parse();
+pub async fn run_http_proxy(
+    listener: TcpListener,
+    ctx: Arc<ProxyContext>,
+    skel: Option<Arc<bpf::FilterSkel<'static>>>,
+    mut shutdown: watch::Receiver<bool>,
+) -> Result<()> {
+    loop {
+        tokio::select! {
+            accept = listener.accept() => {
+                let (stream, peer) = match accept {
+                    Ok(tuple) => tuple,
+                    Err(e) => {
+                        eprintln!("http accept error: {e}");
+                        continue;
+                    }
+                };
 
-//     let upstream_uri = match args.tls_mode {
-//         TlsMode::Disabled => None,
-//         _ => {
-//             let upstream = args
-//                 .upstream
-//                 .as_ref()
-//                 .ok_or_else(|| anyhow!("--upstream is required when TLS mode is not disabled"))?;
-//             let parsed = upstream
-//                 .parse::<Uri>()
-//                 .context("failed to parse --upstream as URI")?;
-//             if parsed.scheme().is_none() || parsed.authority().is_none() {
-//                 return Err(anyhow!(
-//                     "upstream URI must be absolute (e.g. http://127.0.0.1:8081)"
-//                 ));
-//             }
-//             Some(parsed)
-//         }
-//     };
+                let ctx_clone = ctx.clone();
+                let skel_clone = skel.clone();
+                tokio::spawn(async move {
+                    if let Err(err) = handle_http_connection(stream, peer, ctx_clone, skel_clone).await {
+                        eprintln!("http connection error: {err:?}");
+                    }
+                });
+            }
+            changed = shutdown.changed() => {
+                if changed.is_ok() && *shutdown.borrow() {
+                    println!("HTTP server shutdown signal received");
+                    break;
+                }
+            }
+        }
+    }
+    Ok(())
+}
 
-//     if args.tls_mode == TlsMode::Custom
-//         && (args.tls_cert_path.is_none() || args.tls_key_path.is_none())
-//     {
-//         return Err(anyhow!(
-//             "--tls-cert-path and --tls-key-path are required for custom TLS mode"
-//         ));
-//     }
+async fn handle_http_connection(
+    stream: tokio::net::TcpStream,
+    peer: std::net::SocketAddr,
+    ctx: Arc<ProxyContext>,
+    skel: Option<Arc<bpf::FilterSkel<'static>>>,
+) -> Result<()> {
+    // Simple HTTP proxy without TLS
+    use hyper::server::conn::http1;
+    use hyper::service::service_fn;
+    use hyper_util::rt::TokioExecutor;
+    use hyper_util::rt::TokioIo;
 
-//     let tls_state = SharedTlsState::new(
-//         args.tls_mode,
-//         args.acme_domains.clone(),
-//         args.tls_cert_path.as_ref().map(|p| p.display().to_string()),
-//     );
+    let service = service_fn(move |req| {
+        let ctx = ctx.clone();
+        let skel = skel.clone();
+        async move {
+            proxy_http_service(req, ctx, Some(peer), None, None).await
+        }
+    });
 
-//     let control_listener = TcpListener::bind(args.control_addr)
-//         .await
-//         .context("failed to bind control socket")?;
-//     println!(
-//         "HTTP control-plane listening on http://{}",
-//         args.control_addr
-//     );
+    let io = TokioIo::new(stream);
+    let conn = http1::Builder::new()
+        .serve_connection(io, service);
 
-//     let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    if let Err(err) = conn.await {
+        eprintln!("HTTP connection error: {err}");
+    }
 
-//     let boxed_open: Box<MaybeUninit<libbpf_rs::OpenObject>> = Box::new(MaybeUninit::uninit());
-//     let open_object: &'static mut MaybeUninit<libbpf_rs::OpenObject> = Box::leak(boxed_open);
-//     let skel_builder = bpf::FilterSkelBuilder::default();
-
-//     let state = match skel_builder.open(open_object).and_then(|o| o.load()) {
-//         Ok(mut skel) => {
-//             let ifindex = match if_nametoindex(args.iface.as_str()) {
-//                 Ok(index) => index as i32,
-//                 Err(e) => {
-//                     return Err(anyhow!(
-//                         "failed to get interface index for '{}': {e}",
-//                         args.iface
-//                     ));
-//                 }
-//             };
-
-//             match skel.progs.firewall.attach_xdp(ifindex) {
-//                 Ok(link) => {
-//                     skel.links = bpf::FilterLinks {
-//                         firewall: Some(link),
-//                     };
-//                     println!(
-//                         "Attached XDP program to interface '{}' (ifindex {})",
-//                         args.iface, ifindex
-//                     );
-//                 }
-//                 Err(e) => {
-//                     return Err(anyhow!(
-//                         "failed to attach XDP program. Your environment may not support it: {e}"
-//                     ));
-//                 }
-//             }
-
-//             AppState {
-//                 skel: Some(Arc::new(skel)),
-//                 tls_state: tls_state.clone(),
-//             }
-//         }
-//         Err(e) => {
-//             eprintln!("WARN: failed to load BPF skeleton: {e}. Control endpoints will be limited.");
-//             AppState {
-//                 skel: None,
-//                 tls_state: tls_state.clone(),
-//             }
-//         }
-//     };
-
-//     let control_state = state.clone();
-//     let control_shutdown = shutdown_rx.clone();
-//     let control_handle = tokio::spawn(async move {
-//         if let Err(err) = run_control_plane(control_listener, control_state, control_shutdown).await
-//         {
-//             eprintln!("control-plane task terminated: {err:?}");
-//         }
-//     });
-
-//     let tls_handle = if let (Some(upstream), TlsMode::Disabled) = (&upstream_uri, args.tls_mode) {
-//         unreachable!("TLS mode disabled but upstream parsed: {upstream}");
-//     } else if let Some(upstream) = upstream_uri.clone() {
-//         let mut builder = Client::builder(TokioExecutor::new());
-//         builder.timer(TokioTimer::new());
-//         builder.pool_timer(TokioTimer::new());
-//         let client: Client<_, Full<Bytes>> = builder.build_http();
-//         let proxy_ctx = Arc::new(ProxyContext { client, upstream });
-//         match args.tls_mode {
-//             TlsMode::Custom => {
-//                 let cert = args.tls_cert_path.as_ref().unwrap();
-//                 let key = args.tls_key_path.as_ref().unwrap();
-//                 let config = load_custom_server_config(cert, key)?;
-//                 let listener = TcpListener::bind(args.tls_addr)
-//                     .await
-//                     .context("failed to bind TLS socket")?;
-//                 println!("HTTPS proxy listening on https://{}", args.tls_addr);
-//                 let shutdown = shutdown_rx.clone();
-//                 let tls_state_clone = tls_state.clone();
-//                 Some(tokio::spawn(async move {
-//                     if let Err(err) = run_custom_tls_proxy(
-//                         listener,
-//                         config.clone(),
-//                         proxy_ctx,
-//                         tls_state_clone,
-//                         shutdown,
-//                     )
-//                     .await
-//                     {
-//                         eprintln!("custom TLS proxy terminated: {err:?}");
-//                     }
-//                 }))
-//             }
-//             TlsMode::Acme => {
-//                 let listener = TcpListener::bind(args.tls_addr)
-//                     .await
-//                     .context("failed to bind TLS socket")?;
-//                 println!("HTTPS proxy (ACME) listening on https://{}", args.tls_addr);
-//                 let tls_state_clone = tls_state.clone();
-//                 let shutdown = shutdown_rx.clone();
-//                 let args_clone = args.clone();
-//                 Some(tokio::spawn(async move {
-//                     if let Err(err) = run_acme_tls_proxy(
-//                         listener,
-//                         &args_clone,
-//                         proxy_ctx,
-//                         tls_state_clone,
-//                         shutdown,
-//                     )
-//                     .await
-//                     {
-//                         eprintln!("ACME TLS proxy terminated: {err:?}");
-//                     }
-//                 }))
-//             }
-//             TlsMode::Disabled => None,
-//         }
-//     } else {
-//         None
-//     };
-
-//     signal::ctrl_c().await?;
-//     println!("Shutdown signal received, stopping servers...");
-//     let _ = shutdown_tx.send(true);
-
-//     if let Some(handle) = tls_handle {
-//         if let Err(err) = handle.await {
-//             eprintln!("TLS task join error: {err}");
-//         }
-//     }
-
-//     if let Err(err) = control_handle.await {
-//         eprintln!("control-plane join error: {err}");
-//     }
-//     Ok(())
-// }
+    Ok(())
+}
