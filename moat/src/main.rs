@@ -16,6 +16,7 @@ use libbpf_rs::{MapCore, MapFlags};
 use nix::net::if_::if_nametoindex;
 use tokio::net::TcpListener;
 
+pub mod access_log;
 pub mod access_rules;
 pub mod app_state;
 pub mod cli;
@@ -101,7 +102,8 @@ async fn main() -> Result<()> {
             bpf_utils::bpf_attach_to_xdp(&mut skel, ifindex).unwrap();
             println!("BPF sucessfully attached to xdp");
 
-            let block_ip: Ipv4Addr = Ipv4Addr::from_str("192.168.215.0").unwrap();
+
+            let block_ip: Ipv4Addr = Ipv4Addr::from_str("192.168.215.123").unwrap();
 
             let my_ip_key_bytes =
                 &utils::bpf_utils::convert_ip_into_bpf_map_key_bytes(block_ip, 32);
@@ -133,9 +135,10 @@ async fn main() -> Result<()> {
         let skel_clone = state.skel.clone();
         let api_key = args.arxignis_api_key.clone();
         let rule_id = args.arxignis_rule_id.clone();
+        let base_url = args.arxignis_base_url.clone();
         let shutdown = shutdown_rx.clone();
         Some(access_rules::start_access_rules_updater(
-            skel_clone, api_key, rule_id, shutdown,
+            base_url, skel_clone, api_key, rule_id, shutdown,
         ))
     };
 
@@ -214,6 +217,7 @@ async fn main() -> Result<()> {
                 println!("HTTP server listening on http://{} (ACME HTTP-01 challenges + regular HTTP)", args.http_addr);
                 println!("HTTPS server (ACME) listening on https://{}", args.tls_addr);
                 
+
                 let tls_state_clone = tls_state.clone();
                 let shutdown = shutdown_rx.clone();
                 let args_clone = args.clone();
