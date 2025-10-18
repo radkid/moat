@@ -23,9 +23,13 @@ pub struct Args {
     #[arg(long, value_enum, default_value_t = TlsMode::Disabled)]
     pub tls_mode: TlsMode,
 
-    /// Upstream origin URL (required unless TLS is disabled).
+    /// Reject non-SSL requests when TLS mode is disabled (TLS-only mode).
+    #[arg(long, default_value_t = false)]
+    pub tls_only: bool,
+
+    /// Upstream origin URL (always required).
     #[arg(long)]
-    pub upstream: Option<String>,
+    pub upstream: String,
 
     /// Path to custom certificate (PEM) when using custom TLS mode.
     #[arg(long)]
@@ -64,7 +68,7 @@ pub struct Args {
     pub redis_url: String,
 
     /// Namespace prefix for Redis ACME cache entries.
-    #[arg(long, default_value = "bpf-firewall:acme")]
+    #[arg(long, default_value = "arxignis:acme")]
     pub redis_prefix: String,
 
     /// The network interface to attach the XDP program to.

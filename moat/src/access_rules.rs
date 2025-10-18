@@ -1,9 +1,9 @@
 use hyper::StatusCode;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::select;
 use tokio::task::JoinHandle;
 use tokio::time::{Duration, MissedTickBehavior, interval};
@@ -42,6 +42,10 @@ struct RuleSet {
 }
 
 pub type Details = serde_json::Value;
+
+// Store previous rules state for comparison
+type PreviousRules = Arc<Mutex<HashSet<(Ipv4Addr, u32)>>>;
+type PreviousRulesV6 = Arc<Mutex<HashSet<(Ipv6Addr, u32)>>>;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct ErrorResponse {
@@ -126,11 +130,14 @@ pub fn start_access_rules_updater(
     rule_id: String,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> JoinHandle<()> {
+    // Initialize previous rules state
+    let previous_rules = Arc::new(Mutex::new(HashSet::new()));
+    let previous_rules_v6 = Arc::new(Mutex::new(HashSet::new()));
     tokio::spawn(async move {
         let mut ticker = interval(Duration::from_secs(10));
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
-        if let Err(e) = fetch_and_apply(base_url.clone(), api_key.clone(), rule_id.clone(), skel.as_ref()).await {
+        if let Err(e) = fetch_and_apply(base_url.clone(), api_key.clone(), rule_id.clone(), skel.as_ref(), &previous_rules, &previous_rules_v6).await {
             eprintln!("initial access rules update failed: {e}");
         }
 
@@ -140,7 +147,7 @@ pub fn start_access_rules_updater(
                     if *shutdown.borrow() { break; }
                 }
                 _ = ticker.tick() => {
-                    if let Err(e) = fetch_and_apply(base_url.clone(), api_key.clone(), rule_id.clone(), skel.as_ref()).await {
+                    if let Err(e) = fetch_and_apply(base_url.clone(), api_key.clone(), rule_id.clone(), skel.as_ref(), &previous_rules, &previous_rules_v6).await {
                         eprintln!("periodic access rules update failed: {e}");
                     }
                 }
@@ -154,10 +161,12 @@ async fn fetch_and_apply(
     api_key: String,
     rule_id: String,
     skel: Option<&Arc<bpf::FilterSkel<'static>>>,
+    previous_rules: &PreviousRules,
+    previous_rules_v6: &PreviousRulesV6,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let resp = fetch_access_rules(base_url.clone(), api_key.clone(), rule_id.clone()).await?;
     if let Some(s) = skel {
-        apply_rules_to_skel(s, &resp)?;
+        apply_rules_to_skel(s, &resp, previous_rules, previous_rules_v6)?;
     }
     Ok(())
 }
@@ -165,12 +174,9 @@ async fn fetch_and_apply(
 fn apply_rules_to_skel(
     skel: &bpf::FilterSkel<'_>,
     resp: &AccessRulesApiResponse,
+    previous_rules: &PreviousRules,
+    previous_rules_v6: &PreviousRulesV6,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use std::collections::HashSet;
-
-    println!("started applying rules");
-
-    // Helper: parse IPv4 or IPv4/CIDR into (network, prefix)
     fn parse_ipv4_ip_or_cidr(entry: &str) -> Option<(Ipv4Addr, u32)> {
         let s = entry.trim();
         if s.is_empty() {
@@ -233,8 +239,8 @@ fn apply_rules_to_skel(
         Some((ip, prefix))
     }
 
-    let mut to_block: HashSet<(Ipv4Addr, u32)> = HashSet::new();
-    let mut to_block_v6: HashSet<(Ipv6Addr, u32)> = HashSet::new();
+    let mut current_rules: HashSet<(Ipv4Addr, u32)> = HashSet::new();
+    let mut current_rules_v6: HashSet<(Ipv6Addr, u32)> = HashSet::new();
 
     for rule in &resp.data {
         if !rule.is_active {
@@ -246,14 +252,14 @@ fn apply_rules_to_skel(
             if ip_str.contains(':') {
                 // IPv6 address
                 if let Some((net, prefix)) = parse_ipv6_ip_or_cidr(ip_str) {
-                    to_block_v6.insert((net, prefix));
+                    current_rules_v6.insert((net, prefix));
                 } else {
                     eprintln!("invalid IPv6 ip/cidr ignored: {}", ip_str);
                 }
             } else {
                 // IPv4 address
                 if let Some((net, prefix)) = parse_ipv4_ip_or_cidr(ip_str) {
-                    to_block.insert((net, prefix));
+                    current_rules.insert((net, prefix));
                 } else {
                     eprintln!("invalid IPv4 ip/cidr ignored: {}", ip_str);
                 }
@@ -267,14 +273,14 @@ fn apply_rules_to_skel(
                     if ip_str.contains(':') {
                         // IPv6 address
                         if let Some((net, prefix)) = parse_ipv6_ip_or_cidr(ip_str) {
-                            to_block_v6.insert((net, prefix));
+                            current_rules_v6.insert((net, prefix));
                         } else {
                             eprintln!("invalid IPv6 ip/cidr ignored: {}", ip_str);
                         }
                     } else {
                         // IPv4 address
                         if let Some((net, prefix)) = parse_ipv4_ip_or_cidr(ip_str) {
-                            to_block.insert((net, prefix));
+                            current_rules.insert((net, prefix));
                         } else {
                             eprintln!("invalid IPv4 ip/cidr ignored: {}", ip_str);
                         }
@@ -290,14 +296,14 @@ fn apply_rules_to_skel(
                     if ip_str.contains(':') {
                         // IPv6 address
                         if let Some((net, prefix)) = parse_ipv6_ip_or_cidr(ip_str) {
-                            to_block_v6.insert((net, prefix));
+                            current_rules_v6.insert((net, prefix));
                         } else {
                             eprintln!("invalid IPv6 ip/cidr ignored: {}", ip_str);
                         }
                     } else {
                         // IPv4 address
                         if let Some((net, prefix)) = parse_ipv4_ip_or_cidr(ip_str) {
-                            to_block.insert((net, prefix));
+                            current_rules.insert((net, prefix));
                         } else {
                             eprintln!("invalid IPv4 ip/cidr ignored: {}", ip_str);
                         }
@@ -307,27 +313,59 @@ fn apply_rules_to_skel(
         }
     }
 
-    let mut fw = MOATFirewall::new(skel);
+    // Compare with previous rules to detect changes
+    let mut previous_rules_guard = previous_rules.lock().unwrap();
+    let mut previous_rules_v6_guard = previous_rules_v6.lock().unwrap();
 
-    // Apply IPv4 bans
-    for (net, prefix) in to_block {
-        if let Err(e) = fw.ban_ip(net, prefix) {
-            eprintln!("map update failed for {}/{}: {}", net, prefix, e);
-        }
-        // else {
-        //     println!("Added IPv4 {}/{} to banned", net, prefix);
-        // }
+    // Check if rules have changed
+    let ipv4_changed = *previous_rules_guard != current_rules;
+    let ipv6_changed = *previous_rules_v6_guard != current_rules_v6;
+
+    if !ipv4_changed && !ipv6_changed {
+        println!("No changes detected, skipping BPF map updates");
+        return Ok(());
     }
 
-    // Apply IPv6 bans
-    for (net, prefix) in to_block_v6 {
-        // println!("adding IPv6 {}/{} to map", net, prefix);
-        if let Err(e) = fw.ban_ipv6(net, prefix) {
-            eprintln!("IPv6 map update failed for {}/{}: {}", net, prefix, e);
+    println!("Rules changed, applying updates to BPF maps");
+
+    let mut fw = MOATFirewall::new(skel);
+
+    if ipv4_changed {
+        // Remove old IPv4 rules that are no longer needed
+        for (net, prefix) in previous_rules_guard.difference(&current_rules) {
+            if let Err(e) = fw.unban_ip(*net, *prefix) {
+                eprintln!("IPv4 unban failed for {}/{}: {}", net, prefix, e);
+            }
         }
-        // else {
-        //     println!("Added IPv6 {}/{} to banned", net, prefix);
-        // }
+
+        // Add new IPv4 rules
+        for (net, prefix) in current_rules.difference(&*previous_rules_guard) {
+            if let Err(e) = fw.ban_ip(*net, *prefix) {
+                eprintln!("IPv4 ban failed for {}/{}: {}", net, prefix, e);
+            }
+        }
+
+        // Update previous rules
+        *previous_rules_guard = current_rules;
+    }
+
+    if ipv6_changed {
+        // Remove old IPv6 rules that are no longer needed
+        for (net, prefix) in previous_rules_v6_guard.difference(&current_rules_v6) {
+            if let Err(e) = fw.unban_ipv6(*net, *prefix) {
+                eprintln!("IPv6 unban failed for {}/{}: {}", net, prefix, e);
+            }
+        }
+
+        // Add new IPv6 rules
+        for (net, prefix) in current_rules_v6.difference(&*previous_rules_v6_guard) {
+            if let Err(e) = fw.ban_ipv6(*net, *prefix) {
+                eprintln!("IPv6 ban failed for {}/{}: {}", net, prefix, e);
+            }
+        }
+
+        // Update previous rules
+        *previous_rules_v6_guard = current_rules_v6;
     }
 
     Ok(())
