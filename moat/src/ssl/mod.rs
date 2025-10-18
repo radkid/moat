@@ -256,7 +256,6 @@ impl futures::Stream for FingerprintingTcpListener {
         if let Some(mut fut) = self.pending.take() {
             match fut.as_mut().poll(cx) {
                 Poll::Ready(Ok((stream, fp, peer))) => {
-                    log_tls_fingerprint(peer, fp.as_ref());
                     return Poll::Ready(Some(Ok(stream)));
                 }
                 Poll::Ready(Err(e)) => {
@@ -295,21 +294,6 @@ impl futures::Stream for FingerprintingTcpListener {
 
 // Implement Unpin so it works with rustls-acme
 impl Unpin for FingerprintingTcpListener {}
-
-pub fn log_tls_fingerprint(peer: SocketAddr, fingerprint: Option<&TlsFingerprint>) {
-    if let Some(fp) = fingerprint {
-        println!(
-            "TLS client {peer}: ja4={} ja4_raw={} ja4_unsorted={} ja4_raw_unsorted={} version={} sni={} alpn={}",
-            fp.ja4,
-            fp.ja4_raw,
-            fp.ja4_unsorted,
-            fp.ja4_raw_unsorted,
-            fp.tls_version,
-            fp.sni.as_deref().unwrap_or("-"),
-            fp.alpn.as_deref().unwrap_or("-")
-        );
-    }
-}
 
 pub fn ipv4_to_u32_be(ip: Ipv4Addr) -> u32 {
     u32::from_be_bytes(ip.octets())
@@ -1029,12 +1013,12 @@ async fn log_access_request_with_body(
         },
         "tls": tls_fingerprint.map(|fp| serde_json::json!({
             "version": fp.tls_version,
-            "cipher": "TLS_AES_128_GCM_SHA256", // TODO: extract actual cipher
+            "cipher": fp.cipher_suite.clone().unwrap_or_else(|| "UNKNOWN_CIPHER".to_string()),
             "alpn": fp.alpn,
             "sni": fp.sni,
             "ja4": fp.ja4,
             "ja4one": fp.ja4_unsorted,
-            "ja4l": "0_0_64", // TODO: calculate actual JA4L
+            "ja4l": fp.ja4l,
             "ja4t": fp.ja4_unsorted,
             "ja4h": fp.ja4_unsorted,
             "server_cert": server_cert_info.map(|cert| serde_json::json!({
@@ -1194,7 +1178,6 @@ pub async fn run_custom_tls_proxy(
                 tokio::spawn(async move {
                     let stream = match FingerprintTcpStream::new(stream).await {
                         Ok(s) => {
-                            log_tls_fingerprint(s.peer_addr(), s.fingerprint());
                             s
                         }
                         Err(err) => {
@@ -1461,7 +1444,6 @@ pub async fn run_acme_http01_proxy(
                             let stream = match FingerprintTcpStream::new(stream).await {
                                 Ok(s) => {
                                     let fingerprint = s.fingerprint().cloned();
-                                    log_tls_fingerprint(s.peer_addr(), s.fingerprint());
                                     (s, fingerprint)
                                 }
                                 Err(err) => {
